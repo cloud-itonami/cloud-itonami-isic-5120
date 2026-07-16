@@ -1,0 +1,197 @@
+(ns airfreightops.governor-test
+  "Pure unit tests of `airfreightops.governor/check` against hand-built
+  proposals -- the fast, focused complement to `governor-contract-test`'s
+  full-graph integration coverage."
+  (:require [clojure.test :refer [deftest is testing]]
+            [airfreightops.advisor :as adv]
+            [airfreightops.governor :as gov]
+            [airfreightops.store :as store]))
+
+(def facility-1 {:facility-id "facility-1" :name "Northgate Air Cargo Terminal" :carrier-id "carrier-1" :registered? true :verified? true})
+(def facility-3 {:facility-id "facility-3" :name "Pending-License Cargo Shed" :carrier-id "carrier-3" :registered? true :verified? false})
+(def contractor-1 {:contractor-id "contractor-1" :name "Ramptech GSE Maintenance" :registered? true :verified? true})
+(def contractor-2 {:contractor-id "contractor-2" :name "Unverified Loader Repair Co." :registered? true :verified? false})
+
+(defn- clean-proposal [op facility-id]
+  {:op op :facility-id facility-id :summary "s" :rationale "routine ground-logistics coordination"
+   :cites [facility-id] :effect :propose :value {} :confidence 0.85})
+
+(defn- clean-maintenance-order [facility-id contractor-id cost]
+  (assoc (clean-proposal :coordinate-maintenance-order facility-id)
+         :value {:facility-id facility-id :contractor-id contractor-id :estimated-cost cost}))
+
+(deftest facility-unregistered-is-hard
+  (testing "no facility record at all -> HARD hold"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          verdict (gov/check {} nil (clean-proposal :log-shipment-record "unknown-facility") s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:facility-unverified} (map :rule (:violations verdict)))))))
+
+(deftest facility-unverified-is-hard
+  (testing "facility registered but not yet verified -> HARD hold"
+    (let [s (store/mem-store {"facility-3" facility-3})
+          verdict (gov/check {} nil (clean-proposal :log-shipment-record "facility-3") s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:facility-unverified} (map :rule (:violations verdict)))))))
+
+(deftest contractor-missing-on-maintenance-order-is-hard
+  (testing "maintenance-order proposal with no :contractor-id at all -> HARD hold"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          verdict (gov/check {} nil (clean-maintenance-order "facility-1" nil 100.0) s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:contractor-unverified} (map :rule (:violations verdict)))))))
+
+(deftest contractor-unregistered-on-maintenance-order-is-hard
+  (testing "maintenance-order proposal naming an unknown contractor -> HARD hold"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          verdict (gov/check {} nil (clean-maintenance-order "facility-1" "unknown-contractor" 100.0) s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:contractor-unverified} (map :rule (:violations verdict)))))))
+
+(deftest contractor-unverified-on-maintenance-order-is-hard
+  (testing "maintenance-order proposal naming a registered-but-unverified contractor -> HARD hold"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1 "contractor-2" contractor-2})
+          verdict (gov/check {} nil (clean-maintenance-order "facility-1" "contractor-2" 100.0) s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:contractor-unverified} (map :rule (:violations verdict)))))))
+
+(deftest contractor-verified-on-maintenance-order-is-not-hard-on-contractor-check
+  (testing "maintenance-order proposal naming a verified contractor never trips :contractor-unverified"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          verdict (gov/check {} nil (clean-maintenance-order "facility-1" "contractor-1" 100.0) s)]
+      (is (empty? (filter #(= :contractor-unverified (:rule %)) (:violations verdict)))))))
+
+(deftest contractor-check-is-scoped-to-maintenance-order-only
+  (testing "non-maintenance-order ops never trip :contractor-unverified, even with no contractors registered at all"
+    (let [s (store/mem-store {"facility-1" facility-1})]
+      (doseq [op [:log-shipment-record :schedule-ground-operation :flag-safety-concern]]
+        (let [verdict (gov/check {} nil (clean-proposal op "facility-1") s)]
+          (is (empty? (filter #(= :contractor-unverified (:rule %)) (:violations verdict)))
+              (str "op " op " must never trip :contractor-unverified")))))))
+
+(deftest effect-not-propose-is-hard
+  (testing "any :effect other than :propose is a HARD, un-overridable block"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          verdict (gov/check {} nil (assoc (clean-proposal :schedule-ground-operation "facility-1") :effect :commit) s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:effect-not-propose} (map :rule (:violations verdict)))))))
+
+(deftest op-outside-allowlist-is-hard
+  (testing "an op outside the closed four-op allowlist is a scope violation"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          verdict (gov/check {} nil (clean-proposal :finalize-airworthiness-clearance "facility-1") s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:op-not-allowed} (map :rule (:violations verdict)))))))
+
+(deftest airworthiness-clearance-finalization-content-is-hard-and-permanent
+  (testing "a proposal whose rationale touches directly finalizing the airworthiness clearance is HARD-blocked regardless of op/confidence"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          poisoned (assoc (clean-proposal :log-shipment-record "facility-1")
+                          :rationale "finalized the airworthiness clearance ahead of the scheduled inspection"
+                          :confidence 0.99)
+          verdict (gov/check {} nil poisoned s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:scope-excluded} (map :rule (:violations verdict)))))))
+
+(deftest weight-and-balance-sign-off-content-is-hard
+  (testing "a proposal touching signing off on the weight and balance is HARD-blocked, same as airworthiness"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          poisoned (assoc (clean-proposal :log-shipment-record "facility-1")
+                          :rationale "signed off on the weight and balance before the load report was on file"
+                          :confidence 0.90)
+          verdict (gov/check {} nil poisoned s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:scope-excluded} (map :rule (:violations verdict)))))))
+
+(deftest dangerous-goods-acceptance-finalization-content-is-hard
+  (testing "a proposal touching accepting the dangerous goods shipment is HARD-blocked"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          poisoned (assoc (clean-proposal :schedule-ground-operation "facility-1")
+                          :summary "accepted the dangerous goods shipment ahead of the DGR compliance check")
+          verdict (gov/check {} nil poisoned s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:scope-excluded} (map :rule (:violations verdict)))))))
+
+(deftest authorize-departure-content-is-hard
+  (testing "a proposal touching authorizing the flight to depart is HARD-blocked"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          poisoned (assoc (clean-maintenance-order "facility-1" "contractor-1" 100.0)
+                          :summary "authorized the flight to depart ahead of the loading discrepancy review")
+          verdict (gov/check {} nil poisoned s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:scope-excluded} (map :rule (:violations verdict)))))))
+
+(deftest override-pilot-judgment-content-is-hard
+  (testing "a proposal touching overriding the pilot's judgment is HARD-blocked"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          poisoned (assoc (clean-proposal :log-shipment-record "facility-1")
+                          :rationale "overrode the pilot's judgment to keep the ground handling window")
+          verdict (gov/check {} nil poisoned s)]
+      (is (true? (:hard? verdict)))
+      (is (some #{:scope-excluded} (map :rule (:violations verdict)))))))
+
+(deftest legitimate-safety-concern-is-not-scope-excluded
+  (testing "flagging observed weight-and-balance/dangerous-goods/airworthiness concerns as a SAFETY CONCERN (not a clearance finalization) never trips scope-exclusion -- this actor's core valid use case must not be self-blocked"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          concern (assoc (clean-proposal :flag-safety-concern "facility-1")
+                         :value {:concern "dangerous goods declaration mismatch on AWB, possible weight and balance discrepancy, airworthiness observation pending inspection"})
+          verdict (gov/check {} nil concern s)]
+      (is (empty? (filter #(= :scope-excluded (:rule %)) (:violations verdict)))
+          "raw observation content (weight-and-balance/dangerous-goods/airworthiness) is exactly what this op exists to surface"))))
+
+(deftest safety-concern-always-escalates-clean
+  (testing ":flag-safety-concern is always high-stakes/escalate, even when otherwise clean and high confidence"
+    (let [s (store/mem-store {"facility-1" facility-1})
+          verdict (gov/check {} nil (assoc (clean-proposal :flag-safety-concern "facility-1") :confidence 0.99) s)]
+      (is (false? (:hard? verdict)))
+      (is (true? (:high-stakes? verdict)))
+      (is (true? (:escalate? verdict))))))
+
+(deftest high-cost-maintenance-order-always-escalates
+  (testing "a :coordinate-maintenance-order above the cost threshold is high-stakes/escalate, even when otherwise clean and high confidence"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          expensive (assoc (clean-maintenance-order "facility-1" "contractor-1" 42000.0) :confidence 0.97)
+          verdict (gov/check {} nil expensive s)]
+      (is (false? (:hard? verdict)))
+      (is (true? (:high-stakes? verdict)))
+      (is (true? (:escalate? verdict))))))
+
+(deftest low-cost-maintenance-order-does-not-force-escalate
+  (testing "a :coordinate-maintenance-order at or below the cost threshold does not trip the high-cost escalate gate"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})
+          cheap (assoc (clean-maintenance-order "facility-1" "contractor-1" 1200.0) :confidence 0.9)
+          verdict (gov/check {} nil cheap s)]
+      (is (false? (:hard? verdict)))
+      (is (false? (:high-stakes? verdict)))
+      (is (false? (:escalate? verdict))))))
+
+;; ----------------------------- self-trip regression -----------------------------
+;;
+;; A known bug class in this actor fleet: the governor's own
+;; scope-exclusion term list is sometimes phrased as a bare noun (e.g.
+;; "airworthiness" or "weight and balance"), which then accidentally
+;; matches inside the mock advisor's own DEFAULT rationale/disclaimer
+;; text for a legitimate, allowed proposal -- causing the actor to
+;; self-block its own happy path. This is a dedicated regression test:
+;; every op the default mock advisor can generate, with default
+;; (non-`out-of-scope?`) request patches, must NEVER trip
+;; `:scope-excluded` or `:op-not-allowed`.
+(deftest default-mock-advisor-proposals-never-self-trip-scope-exclusion
+  (testing "the default mock advisor's own proposals for every allowed op never trip the governor's scope-exclusion check"
+    (let [s (store/mem-store {"facility-1" facility-1} {"contractor-1" contractor-1})]
+      (doseq [op [:log-shipment-record :schedule-ground-operation :coordinate-maintenance-order
+                  :flag-safety-concern]]
+        (let [patch (if (= op :coordinate-maintenance-order)
+                      {:item "routine loader inspection" :estimated-cost 1200.0 :contractor-id "contractor-1"}
+                      {})
+              proposal (adv/infer nil {:op op :facility-id "facility-1" :patch patch})
+              verdict (gov/check {:facility-id "facility-1"} nil proposal s)]
+          (is (empty? (filter #(= :scope-excluded (:rule %)) (:violations verdict)))
+              (str "default advisor proposal for " op " must never self-trip :scope-excluded -- rationale/summary: "
+                   (pr-str (select-keys proposal [:summary :rationale]))))
+          (is (empty? (filter #(= :op-not-allowed (:rule %)) (:violations verdict)))
+              (str "default advisor proposal for " op " must always be inside the closed op allowlist")))))))
+
+(deftest flag-safety-concern-never-auto-eligible-per-governor
+  (testing ":flag-safety-concern is always a member of the governor's own always-escalate-ops, never merely a low-confidence coincidence"
+    (is (contains? gov/always-escalate-ops :flag-safety-concern))))

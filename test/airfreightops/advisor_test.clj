@@ -1,0 +1,69 @@
+(ns airfreightops.advisor-test
+  "Unit tests of `airfreightops.advisor` proposal generation."
+  (:require [clojure.test :refer [deftest is testing]]
+            [airfreightops.advisor :as adv]
+            [airfreightops.store :as store]))
+
+(def db (store/seed-db))
+
+(deftest propose-shipment-record-shape
+  (testing "shipment-record proposal has correct shape and fields"
+    (let [p (adv/infer db {:op :log-shipment-record
+                           :facility-id "facility-1"
+                           :patch {:awb-number "020-12345675" :piece-count 42 :gross-weight-kg 3200 :dg-class "none"}})]
+      (is (= :log-shipment-record (:op p)))
+      (is (= "facility-1" (:facility-id p)))
+      (is (= :propose (:effect p)))
+      (is (<= 0 (:confidence p) 1))
+      (is (map? (:value p)))
+      (is (contains? (:value p) :facility-id)))))
+
+(deftest propose-ground-operation-shape
+  (testing "ground-operation proposal has correct shape"
+    (let [p (adv/infer db {:op :schedule-ground-operation
+                           :facility-id "facility-2"
+                           :patch {:dock "dock-4" :eta "2026-07-20T06:00:00Z"}})]
+      (is (= :schedule-ground-operation (:op p)))
+      (is (= "facility-2" (:facility-id p)))
+      (is (= :propose (:effect p))))))
+
+(deftest propose-maintenance-order-shape
+  (testing "maintenance-order proposal has correct shape"
+    (let [p (adv/infer db {:op :coordinate-maintenance-order
+                           :facility-id "facility-1"
+                           :patch {:item "routine loader inspection" :estimated-cost 1200.0
+                                   :contractor-id "contractor-1"}})]
+      (is (= :coordinate-maintenance-order (:op p)))
+      (is (= :propose (:effect p)))
+      (is (string? (:summary p)))
+      (is (= "contractor-1" (get-in p [:value :contractor-id]))))))
+
+(deftest propose-safety-concern-shape
+  (testing "safety-concern proposal always escalates"
+    (let [p (adv/infer db {:op :flag-safety-concern
+                           :facility-id "facility-1"
+                           :patch {:concern "dangerous goods declaration mismatch on AWB"}})]
+      (is (= :flag-safety-concern (:op p)))
+      (is (= :propose (:effect p)))
+      (is (string? (:summary p))))))
+
+(deftest all-proposals-effect-is-always-propose
+  (testing "every proposal type has :effect :propose, never direct actuation"
+    (doseq [op [:log-shipment-record :schedule-ground-operation :coordinate-maintenance-order
+                :flag-safety-concern]]
+      (let [p (adv/infer db {:op op :facility-id "facility-1" :patch {}})]
+        (is (= :propose (:effect p))
+            (str "op " op " must have :effect :propose"))))))
+
+(deftest rationale-string-is-present
+  (testing "every proposal has a rationale explaining the advisor's thinking"
+    (doseq [op [:log-shipment-record :schedule-ground-operation :coordinate-maintenance-order
+                :flag-safety-concern]]
+      (let [p (adv/infer db {:op op :facility-id "facility-1" :patch {}})]
+        (is (string? (:rationale p))
+            (str "op " op " must have a :rationale string"))))))
+
+(deftest out-of-scope-hook-injects-flight-ops-content
+  (testing "the test-only out-of-scope? hook injects content that touches flight-operations/departure-authorization scope, exercising the governor end-to-end"
+    (let [p (adv/infer db {:op :log-shipment-record :facility-id "facility-1" :out-of-scope? true :patch {}})]
+      (is (re-find #"(?i)authorized the flight to depart|overrode the pilot" (:rationale p))))))
