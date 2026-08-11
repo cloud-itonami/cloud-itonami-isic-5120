@@ -185,7 +185,24 @@ clojure -M:lint
 
 # Run demo
 clojure -M:run
+
+# Regenerate the operator console (docs/samples/operator-console.html)
+clojure -M:dev:render-html
 ```
+
+### Operator console
+
+`docs/samples/operator-console.html` is a **generated** artifact, not a
+mock-up. `airfreightops.render-html` drives the real
+`airfreightops.operation` langgraph StateGraph over the real
+`airfreightops.store/seed-db` -- real advisor, real
+`airfreightops.governor`, real `airfreightops.phase` gate -- and renders
+the store back out. Every facility/contractor id on the page comes from
+`store/demo-data`, and every HARD-hold row is a `:governor-hold` fact the
+governor itself produced (all four rules -- `:facility-unverified`,
+`:contractor-unverified`, `:effect-not-propose`, `:scope-excluded` --
+fire in the run). Output is deterministic and byte-stable; do not hand-
+edit it.
 
 ### Test suite
 
