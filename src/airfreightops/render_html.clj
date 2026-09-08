@@ -31,7 +31,7 @@
   Deterministic: seeded store, deterministic mock advisor, no clock, no
   randomness, key-sorted payload rendering. Re-running produces a
   byte-identical file."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [langgraph.graph :as g]
             [airfreightops.advisor :as advisor]
             [airfreightops.governor :as governor]
