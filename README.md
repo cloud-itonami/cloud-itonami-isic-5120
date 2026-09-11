@@ -206,14 +206,14 @@ edit it.
 
 ### Test suite
 
-- `test/airfreightops/governor_test.clj` -- unit tests of governor hard
+- `test/airfreightops/governor_test.cljk` -- unit tests of governor hard
   checks, scope exclusion, and the self-trip regression test
-- `test/airfreightops/advisor_test.clj` -- advisor proposal shape and
+- `test/airfreightops/advisor_test.cljk` -- advisor proposal shape and
   consistency
-- `test/airfreightops/phase_test.clj` -- rollout phase logic
-- `test/airfreightops/governor_contract_test.clj` -- full graph
+- `test/airfreightops/phase_test.cljk` -- rollout phase logic
+- `test/airfreightops/governor_contract_test.cljk` -- full graph
   integration, audit trail
-- `test/airfreightops/store_contract_test.clj` -- Store protocol and
+- `test/airfreightops/store_contract_test.cljk` -- Store protocol and
   MemStore implementation
 
 ### Modules
