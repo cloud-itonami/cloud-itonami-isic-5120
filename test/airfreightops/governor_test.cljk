@@ -2,7 +2,7 @@
   "Pure unit tests of `airfreightops.governor/check` against hand-built
   proposals -- the fast, focused complement to `governor-contract-test`'s
   full-graph integration coverage."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [airfreightops.advisor :as adv]
             [airfreightops.governor :as gov]
             [airfreightops.store :as store]))
