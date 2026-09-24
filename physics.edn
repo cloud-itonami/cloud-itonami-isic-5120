@@ -1,0 +1,46 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:dev:physics` runs it.
+;;
+;; README "Robotics premise": warehouse cargo handling and ULD
+;; build-up/break-down for freight air transport (ISIC 5120). Physical work
+;; modelled here: an arm stacking cartons onto a ULD pallet during build-up,
+;; a transporter moving a built-up ULD from the cargo terminal to the
+;; aircraft stand, and a temperature-sensitive shipment waiting on the apron
+;; in an insulated passive container whose interior air is held near 5 C by
+;; phase-change packs.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isic-5120"
+ :cases
+ [{:id :uld-buildup-carton-stack
+   :kind :manipulator
+   :procedure "build-up arm lifts a carton from the conveyor and stacks it on the upper layer of a ULD pallet"
+   :params {:l1-m 1.00 :l2-m 0.90 :m1-kg 20.0 :m2-kg 14.0
+            :from [1.30 0.00] :to [0.70 1.40] :duration-s 2.5 :steps 500}
+   :sweep {:param :payload-kg :values [5.0 15.0 25.0 35.0 50.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 900.0 :basis "estimate: continuous shoulder torque of a ~50 kg-payload palletising arm class"}
+   :boundary {:lo 1.0 :hi 200.0}}
+  {:id :uld-to-aircraft-stand
+   :kind :transport
+   :procedure "ULD transporter carries a built-up pallet from the cargo terminal to the freighter's stand"
+   :params {:mass-kg 6000.0 :distance-m 800.0 :v-max-mps 5.0 :a-max-mps2 0.4
+            :brake-decel-mps2 1.2 :drive-force-n 8000.0 :crr 0.015
+            :cog-height-m 0.8 :support-half-length-m 1.5 :payload-cog-height-m 1.9
+            :max-time-s 3600.0}
+   :sweep {:param :payload-kg :values [1000.0 2500.0 4000.0 5500.0 6800.0]}
+   :quantity :cycle-time-s
+   :limit {:max 180.0 :basis "estimate: one terminal-to-stand leg inside the freighter's loading slot plan"}
+   :boundary {:lo 500.0 :hi 30000.0}}
+  {:id :pharma-container-on-apron
+   :kind :thermal
+   :procedure "insulated passive container of 2-8 C pharmaceuticals waits on a 35 C apron before loading"
+   :params {:conductivity-w-mk 0.025 :density-kg-m3 35.0 :specific-heat-j-kgk 1400.0
+            :t0-c 5.0 :t-hot-c 35.0 :h-front-w-m2k 15.0 :t-back-ambient-c 5.0 :h-back-w-m2k 5.0
+            :threshold-c 8.0 :duration-s 21600.0 :nodes 11}
+   :sweep {:param :thickness-m :values [0.02 0.04 0.06 0.08 0.10]}
+   :quantity :peak-back-c
+   :limit {:max 8.0 :basis "estimate: the insulation inner wall, facing air held at 5 C by the phase-change packs (h 5 W/m2K), must not exceed the 8 C top of the 2-8 C label range"}
+   :boundary {:lo 0.01 :hi 0.12}}]}
