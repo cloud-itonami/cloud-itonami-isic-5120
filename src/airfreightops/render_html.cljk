@@ -31,7 +31,7 @@
   Deterministic: seeded store, deterministic mock advisor, no clock, no
   randomness, key-sorted payload rendering. Re-running produces a
   byte-identical file."
-  (:require [kotoba.lang.text :as str]
+  (:require [kotoba.io :as kio] [kotoba.lang.text :as str]
             [langgraph.graph :as g]
             [airfreightops.advisor :as advisor]
             [airfreightops.governor :as governor]
@@ -351,8 +351,8 @@
 (defn -main [& args]
   (let [out (or (first args) "docs/samples/operator-console.html")
         db  (run-demo!)
-        f   (java.io.File. ^String out)]
-    (when-let [p (.getParentFile f)] (.mkdirs p))
+        f   (kio/file ^String out)]
+    (when-let [p (kio/parent-file f)] (kio/mkdirs p))
     (spit f (render db))
     (println "wrote" out
              "-- ledger facts:" (count (store/ledger db))
